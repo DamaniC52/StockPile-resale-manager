@@ -1,0 +1,31 @@
+# Direct dependencies, unpinned for the first install.
+# After it succeeds we snapshot exact versions into requirements.lock.txt.
+#
+# The distinction matters and interviewers ask about it:
+#   requirements.txt      -> what we *intend* to depend on (human-edited)
+#   requirements.lock.txt -> what is *actually* installed, transitive deps included
+#                            (machine-generated, guarantees reproducible builds)
+
+# --- Web framework ---
+fastapi
+uvicorn[standard]
+
+# --- Database ---
+sqlalchemy>=2.0
+# psycopg 3, NOT psycopg2-binary. psycopg2 is the older driver; v3 is the
+# actively developed one, has wheels for modern Python, and is what the
+# `postgresql+psycopg://` URL scheme selects.
+psycopg[binary]
+alembic
+
+# --- Config & validation ---
+pydantic-settings
+
+# --- Auth (used in Phase 2) ---
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+
+# --- Tests ---
+pytest
+httpx
