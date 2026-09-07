@@ -1,16 +1,6 @@
-"""Product — shared catalog identity. GLOBAL data, not per-user data.
+"""Product — shared catalog identity that market prices attach to.
 
-Why this table exists at all, since items already store a name and size:
-
-Market price is a fact about *the product*, not about anyone's copy of it. If
-five users each own the same Jordan 4 in size 10, the StockX lowest ask is one
-number. Keying price history on `item_id` would store that number five times,
-poll the API five times, and let the five copies drift apart.
-
-So `products` is the thing prices hang off, and each user's `items` point at it.
-Recognising which data is tenant-scoped and which is shared reference data is a
-genuinely useful instinct — it's the same reasoning behind a `currencies` or
-`countries` table.
+Global, not per-user: five users owning the same shoe share one market price.
 """
 
 from typing import TYPE_CHECKING
@@ -30,12 +20,9 @@ class Product(TimestampMixin, Base):
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-
-    brand: Mapped[str | None] = mapped_column(String(80))  # "Nike", "Supreme"
-    name: Mapped[str] = mapped_column(String(200))  # "Air Jordan 4 Retro Bred"
-    # Manufacturer style code — "DZ5485-612". The closest thing sneakers have to
-    # a universal identifier, which is why it anchors the uniqueness rule below.
-    sku: Mapped[str | None] = mapped_column(String(64))
+    brand: Mapped[str | None] = mapped_column(String(80))
+    name: Mapped[str] = mapped_column(String(200))
+    sku: Mapped[str | None] = mapped_column(String(64))  # style code, e.g. DZ5485-612
     size: Mapped[str | None] = mapped_column(String(20))
     category: Mapped[str] = mapped_column(
         String(32), server_default=text(f"'{ProductCategory.OTHER.value}'")
@@ -47,21 +34,12 @@ class Product(TimestampMixin, Base):
     )
 
     __table_args__ = (
-        # A product is identified by style code + size: the same shoe in size 9
-        # and size 10 are different products with different market prices.
-        #
-        # postgresql_nulls_not_distinct is the interesting part. By DEFAULT, SQL
-        # treats NULL as "unknown", so NULL != NULL, and a plain UNIQUE(sku, size)
-        # would happily accept a thousand rows with sku = NULL. That silently
-        # breaks dedup for exactly the messy records you most want deduped.
-        #
-        # NULLS NOT DISTINCT (Postgres 15+) makes NULL compare equal to NULL for
-        # this constraint, so at most one (NULL, NULL) row can exist.
+        # NULLS NOT DISTINCT (PG15+): without it, NULL != NULL and rows with a
+        # missing sku would never be treated as duplicates.
         UniqueConstraint("sku", "size", postgresql_nulls_not_distinct=True),
         CheckConstraint(
             f"category IN ({sql_values(ProductCategory)})", name="category_valid"
         ),
-        # Serves the catalog picker's "type a brand, see its products" lookup.
         Index("ix_products_brand_name", "brand", "name"),
     )
 
