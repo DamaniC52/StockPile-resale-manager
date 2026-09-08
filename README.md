@@ -6,6 +6,18 @@ Resellers mostly run on spreadsheets, which handle *what you own* but fall apart
 
 **Stack:** FastAPI · PostgreSQL 16 · SQLAlchemy 2.0 · Alembic · React 19 · Vite · Tailwind 4 · Recharts
 
+![Portfolio view: realized profit of $352.85 charted as a step function over three months](docs/screenshots/portfolio.png)
+
+Profit is charted as a step function because it changes only when a sale is recorded, not continuously. The drop in late July is a real loss — a tee that sold for less than it cost.
+
+![Inventory table listing lots with size, source, status, units remaining, unit cost and capital tied up](docs/screenshots/inventory.png)
+
+Each row is a lot rather than a single unit, so `1/4` means one of four units is still unsold.
+
+![Add inventory dialog with fields for item, size, condition, units, cost per unit and purchase fees](docs/screenshots/add-item.png)
+
+Purchase fees are recorded against the whole lot, not per unit, and are divided across sales as they happen.
+
 ---
 
 ## Running it

@@ -26,7 +26,9 @@ const STOCK_TABS = [
 const STATUS = {
   in_stock: { label: "In stock", tone: "neutral" },
   partially_sold: { label: "Part sold", tone: "neutral" },
-  sold_out: { label: "Sold out", tone: "gain" },
+  // Neutral, not green: colour is reserved for money, and a green status
+  // badge competes with the profit figures for the same signal.
+  sold_out: { label: "Sold out", tone: "neutral" },
 };
 
 export default function Inventory() {

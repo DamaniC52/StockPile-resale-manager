@@ -92,7 +92,10 @@ export default function Portfolio() {
     // when there is a prior figure to compare against.
     const pct = priorProfit !== 0 ? (periodProfit / Math.abs(priorProfit)) * 100 : null;
 
-    return { totalProfit, periodProfit, pct, tiedUp, units, series, count: sales.length };
+    // With nothing before the window, the "change" is the total restated.
+    const hasComparison = before.length > 0;
+
+    return { totalProfit, periodProfit, pct, tiedUp, units, series, hasComparison, count: sales.length };
   }, [sales, items, range]);
 
   if (!view) return <div className="px-6 py-10 text-muted">Loading…</div>;
@@ -105,12 +108,12 @@ export default function Portfolio() {
         <h1 className="expanded text-lg font-semibold">Portfolio</h1>
       </div>
 
-      <div className="px-6 py-6">
+      <div className="max-w-5xl px-6 py-6">
         <p className="text-sm text-muted">Realized profit</p>
 
         <div className="mt-1.5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
           <Profit value={view.totalProfit} size="figure" />
-          {view.count > 0 && (
+          {view.hasComparison && (
             <span
               className={`inline-flex items-center gap-1 text-sm font-medium ${up ? "text-gain" : "text-loss"}`}
             >
@@ -195,7 +198,7 @@ export default function Portfolio() {
                   }}
                 />
                 <Area
-                  type="monotone"
+                  type="stepAfter"
                   dataKey="value"
                   stroke={colors.gain}
                   strokeWidth={2}

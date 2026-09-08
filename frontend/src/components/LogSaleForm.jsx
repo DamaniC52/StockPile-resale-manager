@@ -34,12 +34,18 @@ export default function LogSaleForm({ open, item, onClose, onLogged }) {
     setErrors({});
   }, [open, item]);
 
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const set = (k) => (e) => {
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+    // Clear this field's error as soon as it is edited. Waiting for the next
+    // submit leaves a red message under a field the user has already fixed.
+    setErrors((prev) => (prev[k] ? { ...prev, [k]: undefined } : prev));
+  };
 
   /** Picking a marketplace pre-fills its typical fee from the price entered. */
   function onMarketplaceChange(e) {
     const id = e.target.value;
     const mp = marketplaces.find((m) => String(m.id) === id);
+    setErrors((prev) => (prev.marketplace_id ? { ...prev, marketplace_id: undefined } : prev));
     setForm((f) => {
       const price = Number(f.unit_price) || 0;
       const qty = Number(f.quantity_sold) || 0;
@@ -117,7 +123,7 @@ export default function LogSaleForm({ open, item, onClose, onLogged }) {
       description={`${item.name}${item.size ? ` · size ${item.size}` : ""} — ${item.quantity_remaining} of ${item.quantity} left`}
     >
       <form onSubmit={onSubmit} className="space-y-4">
-        <Field id="marketplace_id" label="Sold on" error={errors.marketplace_id}>
+        <Field id="marketplace_id" label="Marketplace" error={errors.marketplace_id}>
           <select
             id="marketplace_id"
             value={form.marketplace_id}
@@ -186,7 +192,7 @@ export default function LogSaleForm({ open, item, onClose, onLogged }) {
 
         <Field
           id="sold_at"
-          label="Sold on"
+          label="Sale date"
           type="datetime-local"
           value={form.sold_at}
           onChange={set("sold_at")}

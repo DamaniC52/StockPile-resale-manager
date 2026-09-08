@@ -30,7 +30,10 @@ export default function AddItemForm({ open, onClose, onCreated }) {
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
 
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const set = (k) => (e) => {
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+    setErrors((prev) => (prev[k] ? { ...prev, [k]: undefined } : prev));
+  };
 
   function validate() {
     const next = {};

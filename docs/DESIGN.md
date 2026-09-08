@@ -1,10 +1,10 @@
-# StockPile — Data Model & Architecture
+# Stockpile — Data Model & Architecture
 
 Design notes for the backend: what was decided, why, and what each choice costs.
 
 ## Domain
 
-Resale sellers buy inventory and resell it across marketplaces (eBay, StockX, Depop, Grailed). StockPile tracks what they hold, what it cost, what it sold for, and what they actually made after fees.
+Resale sellers buy inventory and resell it across marketplaces (eBay, StockX, Depop, Grailed). FlipTrack tracks what they hold, what it cost, what it sold for, and what they actually made after fees.
 
 | Table | Scope | Purpose |
 |---|---|---|
