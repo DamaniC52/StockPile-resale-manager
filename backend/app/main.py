@@ -6,14 +6,14 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.routers import auth, items, sales
+from app.api.routers import auth, items, marketplaces, sales
 from app.core.config import get_settings
 from app.db.session import get_db
 
 settings = get_settings()
 
 app = FastAPI(
-    title="FlipTrack API",
+    title="StockPile API",
     description="Resale inventory and profit/loss tracking.",
     version="0.1.0",
 )
@@ -32,6 +32,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/api")
 app.include_router(items.router, prefix="/api")
 app.include_router(sales.router, prefix="/api")
+app.include_router(marketplaces.router, prefix="/api")
 
 
 @app.get("/health", tags=["meta"])

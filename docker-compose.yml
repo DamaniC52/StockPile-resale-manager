@@ -1,11 +1,11 @@
 services:
   db:
     image: postgres:16
-    container_name: fliptrack-db
+    container_name: stockpile-db
     environment:
-      POSTGRES_USER: fliptrack
+      POSTGRES_USER: stockpile
       POSTGRES_PASSWORD: dev
-      POSTGRES_DB: fliptrack
+      POSTGRES_DB: stockpile
     ports:
       - "5432:5432"
     volumes:
@@ -13,7 +13,7 @@ services:
     healthcheck:
       # pg_isready, not container status: Postgres accepts connections later
       # than the process starts.
-      test: ["CMD-SHELL", "pg_isready -U fliptrack -d fliptrack"]
+      test: ["CMD-SHELL", "pg_isready -U stockpile -d stockpile"]
       interval: 5s
       timeout: 5s
       retries: 10

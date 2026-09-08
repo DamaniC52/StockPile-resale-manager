@@ -21,7 +21,7 @@ from app.models.marketplace import Marketplace
 from app.models.user import User
 
 # A separate database so a test run can never truncate development data.
-TEST_DB = "fliptrack_test"
+TEST_DB = "stockpile_test"
 
 # Tables in dependency order for truncation.
 _TABLES = "sales, listings, price_snapshots, items, products, users, marketplaces"

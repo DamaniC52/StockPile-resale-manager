@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/* Archivo is variable on weight and width; the width axis gives headings their
+   character, so there is no second typeface. Loaded via <link> in index.html
+   rather than @import, which would delay the request until this is parsed. */
+
+/* Tailwind 4's dark variant defaults to prefers-color-scheme, which a manual
+   toggle cannot override. Rebinding it to a class lets the user's choice win,
+   with the system preference used only to pick the initial value. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Archivo", ui-sans-serif, system-ui, sans-serif;
+
+  --text-figure: 2.5rem;
+  --text-figure--line-height: 1.05;
+  --text-figure--letter-spacing: -0.025em;
+}
+
+/* Themes are defined as CSS variables rather than as dark: variants on every
+   element. One definition per token, two values — components stay readable and
+   a third theme would need no component changes. */
+:root {
+  --ground: #ffffff;
+  --surface: #f7f8fa;
+  --raised: #ffffff;
+  --line: #e5e8ec;
+  --muted: #697382;
+  --ink: #14171a;
+
+  --accent: #2563eb;
+  --accent-ink: #ffffff;
+
+  --gain: #0f7a5a;
+  --gain-soft: #e7f4ee;
+  --loss: #b3123c;
+  --loss-soft: #fdecf0;
+
+  color-scheme: light;
+}
+
+.dark {
+  /* A cool blue-shifted dark scale rather than a tinted near-black: real
+     surfaces need to be distinguishable from each other at low luminance. */
+  --ground: #0e1217;
+  --surface: #161b22;
+  --raised: #1a2029;
+  --line: #262d38;
+  --muted: #8b95a5;
+  --ink: #e8ecf1;
+
+  --accent: #4c82f7;
+  --accent-ink: #0e1217;
+
+  /* Both money hues are lifted: the light-theme values fail contrast against a
+     dark ground. */
+  --gain: #35b98d;
+  --gain-soft: #12291f;
+  --loss: #f0567e;
+  --loss-soft: #2c1119;
+
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-muted: var(--muted);
+  --color-ink: var(--ink);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-gain: var(--gain);
+  --color-gain-soft: var(--gain-soft);
+  --color-loss: var(--loss);
+  --color-loss-soft: var(--loss-soft);
+}
+
+@layer base {
+  html {
+    font-stretch: 96%;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Money and quantities must align in columns to be comparable. This is the
+     numeric feature of the text face, not a switch to a monospace family. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .expanded {
+    font-stretch: 118%;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
