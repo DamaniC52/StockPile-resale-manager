@@ -18,17 +18,19 @@ services:
 
     buildCommand: pip install --upgrade pip && pip install -r requirements.lock.txt
 
-    # Migrations run before the new instance takes traffic, and separately from
-    # the start command: a failed migration should abort the deploy rather than
-    # crash-loop a running service. Seeds are idempotent, so re-running is safe.
-    preDeployCommand: >
+    # Migrations belong in preDeployCommand, so a failure aborts the deploy
+    # instead of crash-looping a live service. That field is paid-plan only, so
+    # on free they run here instead: `&&` still stops the chain on failure, but
+    # the service restarts and retries rather than halting. Seeds are
+    # idempotent, so repeated runs are harmless.
+    #
+    # One worker: 512 MB will not hold more, and the in-memory rate limiter is
+    # per worker anyway.
+    startCommand: >
       alembic upgrade head &&
       python -m app.db.seed &&
-      python -m app.db.demo
-
-    # One worker on the free plan: 512 MB will not hold more, and the in-memory
-    # rate limiter is per worker anyway.
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+      python -m app.db.demo &&
+      uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
 
     envVars:
       - key: PYTHON_VERSION
