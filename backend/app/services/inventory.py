@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session
 from app.models.item import Item
 from app.models.product import Product
 from app.schemas.item import ItemCreate, ItemUpdate
+from app.search.outbox import enqueue
+
+
+# The only columns the search index contains. A change to anything else
+# (cost, quantity, notes) does not need a reindex.
+INDEXED_FIELDS = frozenset({"name", "source", "size"})
 
 
 class InvalidProduct(Exception):
@@ -44,6 +50,9 @@ def create_lot(db: Session, *, user_id: int, payload: ItemCreate) -> Item:
         **payload.model_dump(),
     )
     db.add(item)
+    # flush assigns the id the outbox row needs; both land in one commit.
+    db.flush()
+    enqueue(db, item_id=item.id, user_id=user_id, op="index")
     db.commit()
     db.refresh(item)
     return item
@@ -66,9 +75,18 @@ def update_lot(db: Session, *, item: Item, payload: ItemUpdate) -> Item:
     for field, value in changes.items():
         setattr(item, field, value)
 
+    if INDEXED_FIELDS & changes.keys():
+        enqueue(db, item_id=item.id, user_id=item.user_id, op="index")
     db.commit()
     db.refresh(item)
     return item
+
+
+def delete_lot(db: Session, *, item: Item) -> None:
+    """Delete a lot and queue its removal from the search index, atomically."""
+    enqueue(db, item_id=item.id, user_id=item.user_id, op="delete")
+    db.delete(item)
+    db.commit()
 
 
 def adjust_quantity(db: Session, *, item: Item, new_quantity: int) -> Item:

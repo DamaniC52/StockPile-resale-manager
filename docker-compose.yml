@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: dev
       POSTGRES_DB: stockpile
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,5 +18,28 @@ services:
       timeout: 5s
       retries: 10
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: stockpile-es
+    environment:
+      discovery.type: single-node
+      # Local development only. Security stays on in any shared environment.
+      xpack.security.enabled: "false"
+      # Bounded heap so a laptop can run this next to Postgres and the app.
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    healthcheck:
+      # Yellow is healthy for a single node: there is nowhere to place replicas,
+      # so the cluster can never reach green. Waiting for green would hang.
+      test: ["CMD-SHELL", "curl -sf 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+
 volumes:
   pgdata:
+  esdata:

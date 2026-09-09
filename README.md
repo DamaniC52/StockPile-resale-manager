@@ -4,7 +4,7 @@ Inventory and profit/loss tracking for resellers — sneakers, streetwear and co
 
 Resellers mostly run on spreadsheets, which handle *what you own* but fall apart on *what you actually made*: fees differ per platform, shipping comes out of your pocket, and a lot bought as five pairs sells in three separate transactions months apart. StockPile tracks purchases as lots, records partial sales against them, and computes net profit per sale after every fee.
 
-**Stack:** FastAPI · PostgreSQL 16 · SQLAlchemy 2.0 · Alembic · React 19 · Vite · Tailwind 4 · Recharts
+**Stack:** FastAPI · PostgreSQL 16 · SQLAlchemy 2.0 · Alembic · Elasticsearch 8 · React 19 · Vite · Tailwind 4 · Recharts
 
 ![Portfolio view: realized profit of $352.85 charted as a step function over three months](docs/screenshots/portfolio.png)
 
@@ -25,7 +25,7 @@ Purchase fees are recorded against the whole lot, not per unit, and are divided 
 Requires Docker and [uv](https://github.com/astral-sh/uv). Node 20+ for the frontend.
 
 ```bash
-# 1. Database
+# 1. Database (Elasticsearch is optional; see Search below)
 docker compose up -d db
 
 # 2. Backend
@@ -55,6 +55,20 @@ The app runs at `localhost:5173`; the API at `localhost:8000` with interactive d
 | `JWT_ALGORITHM` | Defaults to `HS256` |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Defaults to `60` |
 | `CORS_ORIGINS` | Comma-separated. Only used when frontend and API are on different domains |
+| `SEARCH_BACKEND` | `postgres` (default) or `elasticsearch` |
+| `ELASTICSEARCH_URL` | Defaults to `http://localhost:9200` |
+| `ELASTICSEARCH_INDEX` | Alias name, default `stockpile-items`. Reindexing swaps what it points at |
+| `SEARCH_SYNC_INTERVAL` | Seconds between outbox drains, default `2` |
+
+To search with Elasticsearch instead of Postgres:
+
+```bash
+docker compose up -d elasticsearch          # ~40s to become healthy
+SEARCH_BACKEND=elasticsearch .venv/Scripts/python -m app.search.cli reindex
+SEARCH_BACKEND=elasticsearch .venv/Scripts/python -m uvicorn app.main:app --reload
+```
+
+From then on the API keeps the index in sync itself. `python -m app.search.cli status` shows the alias target and any pending changes.
 
 ### Tests
 
@@ -62,7 +76,7 @@ The app runs at `localhost:5173`; the API at `localhost:8000` with interactive d
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-Tests run against a real Postgres instance in a separate `stockpile_test` database, not SQLite and not mocks — the behaviours that matter most here are database behaviours.
+Tests run against a real Postgres instance in a separate `stockpile_test` database, not SQLite and not mocks — the behaviours that matter most here are database behaviours. The search tests run against both backends; the Elasticsearch cases skip, rather than fail, when the container is not running.
 
 ---
 
@@ -138,6 +152,76 @@ that looks like 8 ms; under concurrent load those cores are not free.
 Buffers, not elapsed time, are the honest measure of a query on a machine with
 spare CPU.
 
+### Search is full-text, and the benchmark is not the one you'd expect
+
+Item search runs through a `SearchService` protocol with a Postgres
+implementation today and an Elasticsearch one behind the same interface later.
+Both return ranked ids; rows still come from Postgres, so results can never go
+stale relative to the database.
+
+The searchable text is a **stored generated column**:
+
+```sql
+search_vector tsvector GENERATED ALWAYS AS (
+  setweight(to_tsvector('english', coalesce(name,   '')), 'A') ||
+  setweight(to_tsvector('english', coalesce(source, '')), 'B') ||
+  setweight(to_tsvector('english', coalesce(size,   '')), 'C')
+) STORED
+```
+
+Postgres maintains it on every write, so it cannot drift — no trigger and no
+application code. Note this is the same mechanism ruled out for
+`quantity_remaining`: a generated expression must be `IMMUTABLE` and reference
+only its own row. Summing child rows fails both tests; this passes both. (The
+two-argument `to_tsvector` matters — the one-argument form reads a session
+setting and is only `STABLE`.)
+
+`setweight` ranks a name match above a source match, so searching "Supreme"
+puts the Supreme hoodie above a lot merely *bought from* Supreme.
+
+Full-text alone cannot match a half-typed word, so a `pg_trgm`
+`word_similarity` branch runs alongside it for single bare words —
+`word_similarity`, not `similarity`, because the latter compares against the
+whole name: "jorda" against "Jordan 4 Retro Bred" scores 0.24 one way and 0.83
+the other.
+
+Measured on 120,000 lots with `EXPLAIN (ANALYZE, BUFFERS)`:
+
+| Query shape | `ILIKE '%…%'` | Full-text |
+|---|---|---|
+| Selective (`salomon fragment 481`) | 2.7 ms, 109 buffers | **0.17 ms, 15 buffers** |
+| Broad (~10,000 matches), ranked | 2.5 ms, 610 buffers | 19.4 ms, 1,258 buffers |
+
+Full-text is 16x faster on selective queries and **slower** on broad ones, and
+both numbers are worth stating. Ranking 10,000 matches by relevance costs more
+than not ranking them: `ILIKE` ordered by date stops after 50 rows, while
+relevance ordering has to score every match first. That is the price of ranked
+results, not a defect.
+
+The trigram index also turns out to make `ILIKE` itself indexable
+(`gin_trgm_ops` supports `ILIKE '%…%'`), so the migration improved the thing it
+replaced. The case for full-text here is stemming, ranking, and operator
+support — "hoodies" finding "Hoodie", and `-dunk` excluding it — not raw speed
+on every query shape.
+
+One behavioural difference to know: `ILIKE` matches substrings and full-text
+matches whole tokens, so `481` finds `4813` under `ILIKE` and not under
+full-text.
+
+### Elasticsearch is kept consistent through a transactional outbox
+
+Set `SEARCH_BACKEND=elasticsearch` and search runs against an Elasticsearch index — behind the same `SearchService` interface, verified by the same parametrized test suite. Writing to two datastores is where a feature like this usually goes wrong, so the sync path is the part worth reading.
+
+Dual writes (commit to Postgres, then index) are rejected: if the second write fails, or the process dies between them, the two silently diverge. Instead every item change writes a row to `search_outbox` **in the same transaction**, so either both land or neither does. A drainer applies pending rows: `SELECT ... FOR UPDATE SKIP LOCKED` lets several workers drain without double-applying, several changes to one item collapse to its final state, and the document is read from Postgres at drain time rather than from the row. Rows are marked processed only on success; on failure they stay pending with the error recorded, so an unreachable cluster loses nothing.
+
+Out-of-order and duplicate applies are made harmless with external versioning: each document carries `updated_at` as its version with `version_type=external_gte`, so a stale write is refused — and the refusal is treated as success, because the index already holds the newer state.
+
+The index is addressed through an alias. `python -m app.search.cli reindex` builds a new index from Postgres and swaps the alias in one call, so readers never see a half-built index and a bad mapping change rolls back by swapping again. Mappings are explicit with `dynamic: strict`; the analyzer mirrors Postgres's `english` configuration so both backends agree that "hoodies" is `hoodi`, and the same single-bare-word rule governs fuzzy matching on both.
+
+If the cluster is unreachable, `ElasticSearchService` logs and falls back to the Postgres implementation — the app degrades to its source of truth rather than to an error. Results are ids resolved against Postgres either way, so the index can lag (by at most the sync interval plus Elasticsearch's refresh interval) but can never show an item the database no longer has.
+
+Deliberately not done: a dead-letter queue (rows retry indefinitely; `attempts` and `last_error` are the operator's signal), locking during reindex (an item changed mid-reindex is corrected by the next drain), replicas, and cluster security — the last two because this runs on a laptop.
+
 ### Flat purchase fees are allocated so the parts sum exactly
 
 A $20 inbound shipping charge across a lot of three is $6.6667 per unit — rounded, three shares total $20.01. The final sale of a lot absorbs the remainder instead, making the total exact by construction. Verified in `tests/test_sales.py`, including under concurrency.
@@ -153,6 +237,7 @@ backend/
     schemas/      Pydantic request/response contracts
     services/     Multi-step writes that own an invariant
     queries/      Read-side aggregations; returns rows, not entities
+    search/       SearchService protocol, Postgres and Elasticsearch backends, outbox
     api/          Routers and shared dependencies
     db/           Engine, session, declarative base, seed data
   alembic/        Migrations
@@ -169,8 +254,8 @@ There is no repository layer, deliberately. SQLAlchemy's `Session` already imple
 
 ## Status
 
-Working: authentication, item CRUD with filtering and pagination, sales with profit calculation, a dashboard computed entirely in SQL (profit over time, profit by marketplace, inventory aging), light and dark themes.
+Working: authentication, item CRUD with filtering and pagination, sales with profit calculation, full-text search with fuzzy matching on either Postgres or Elasticsearch, a dashboard computed entirely in SQL (profit over time, profit by marketplace, inventory aging), light and dark themes.
 
-Not built yet: Postgres full-text search (item search currently uses `ILIKE`, which cannot use an index), an Elasticsearch backend behind the same `SearchService` interface, and a scheduled market-price poller.
+Not built yet: a scheduled market-price poller.
 
 Deliberately out of scope, since this is not deployed publicly: email verification, password reset, refresh tokens, and rate limiting on the login endpoint. All four would be required before exposing it to real users.

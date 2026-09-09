@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
+    Computed,
     ForeignKey,
     Index,
     String,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     literal,
     text,
 )
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,6 +66,27 @@ class Item(TimestampMixin, Base):
     purchased_at: Mapped[date]
     source: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
+
+    # A STORED generated column: Postgres recomputes it on every insert and
+    # update, so it can never drift from the columns it derives from.
+    #
+    # Unlike quantity_remaining, this qualifies. A generated expression must be
+    # IMMUTABLE and reference only this row -- the two-argument to_tsvector is
+    # immutable (the one-argument form is not; it reads a session setting), and
+    # every input is a column of this row.
+    #
+    # setweight ranks a name match above a source match, which ts_rank uses to
+    # order results.
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "setweight(to_tsvector('english', coalesce(name, '')), 'A') || "
+            "setweight(to_tsvector('english', coalesce(source, '')), 'B') || "
+            "setweight(to_tsvector('english', coalesce(size, '')), 'C')",
+            persisted=True,
+        ),
+        nullable=True,
+    )
 
     user: Mapped["User"] = relationship(back_populates="items")
     product: Mapped["Product | None"] = relationship(back_populates="items")
@@ -112,6 +135,17 @@ class Item(TimestampMixin, Base):
             "ix_items_user_in_stock",
             "user_id",
             postgresql_where=text("quantity_remaining > 0"),
+        ),
+        # GIN, not B-tree: a tsvector holds many lexemes per row, and GIN is the
+        # inverted index that maps each lexeme back to the rows containing it.
+        Index("ix_items_search_vector", "search_vector", postgresql_using="gin"),
+        # Trigram index for partial words. Full-text search matches whole
+        # lexemes, so "jorda" finds nothing; trigrams cover typos and prefixes.
+        Index(
+            "ix_items_name_trgm",
+            "name",
+            postgresql_using="gin",
+            postgresql_ops={"name": "gin_trgm_ops"},
         ),
     )
 

@@ -16,6 +16,7 @@ from app.models.marketplace import Marketplace
 from app.models.price_snapshot import PriceSnapshot
 from app.models.product import Product
 from app.models.sale import Sale
+from app.models.search_outbox import SearchOutbox
 from app.models.user import User
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "Product",
     "ProductCategory",
     "Sale",
+    "SearchOutbox",
     "StockStatus",
     "User",
 ]

@@ -24,7 +24,7 @@ from app.models.user import User
 TEST_DB = "stockpile_test"
 
 # Tables in dependency order for truncation.
-_TABLES = "sales, listings, price_snapshots, items, products, users, marketplaces"
+_TABLES = "search_outbox, sales, listings, price_snapshots, items, products, users, marketplaces"
 
 
 @pytest.fixture(scope="session")
@@ -44,9 +44,17 @@ def engine():
     admin.dispose()
 
     eng = create_engine(test_url, pool_pre_ping=True)
-    # create_all rather than running migrations: this asserts the models are
-    # correct, which is what these tests are about. A separate migration test
-    # covers whether Alembic reproduces them.
+
+    # Extensions the models' indexes depend on. create_all does not create
+    # these, and gin_trgm_ops fails without pg_trgm.
+    with eng.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+
+    # drop_all before create_all. create_all only creates MISSING TABLES -- it
+    # will not add a column to a table that already exists, so a schema change
+    # would otherwise leave the test database silently stale and every test
+    # failing on a column that "does not exist".
+    Base.metadata.drop_all(eng)
     Base.metadata.create_all(eng)
     yield eng
     eng.dispose()
@@ -109,3 +117,43 @@ def lot(db: Session, user: User) -> Item:
     db.add(item)
     db.commit()
     return item
+
+
+# ---------------------------------------------------------------------------
+# Elasticsearch. Tests that need it skip, rather than fail, when it is down, so
+# the Postgres suite still runs on a machine without the container.
+# ---------------------------------------------------------------------------
+ES_TEST_ALIAS = "stockpile-items-test"
+
+
+@pytest.fixture(scope="session")
+def es_client():
+    from app.search.elastic import make_client
+
+    client = make_client(get_settings().ELASTICSEARCH_URL)
+    try:
+        reachable = client.ping()
+    except Exception:
+        reachable = False
+    if not reachable:
+        pytest.skip("elasticsearch is not reachable")
+    yield client
+    client.close()
+
+
+def _drop_alias(client, alias: str) -> None:
+    if client.indices.exists_alias(name=alias):
+        for name in client.indices.get_alias(name=alias):
+            client.indices.delete(index=name)
+
+
+@pytest.fixture
+def es_indexer(es_client):
+    """A fresh, empty index behind the test alias, torn down afterwards."""
+    from app.search.elastic import ElasticIndexer
+
+    _drop_alias(es_client, ES_TEST_ALIAS)
+    indexer = ElasticIndexer(es_client, ES_TEST_ALIAS)
+    indexer.ensure_index()
+    yield indexer
+    _drop_alias(es_client, ES_TEST_ALIAS)

@@ -6,6 +6,9 @@ sqlalchemy>=2.0
 psycopg[binary]
 alembic
 
+# Search. The Postgres backend needs nothing extra; this is for Elasticsearch.
+elasticsearch>=8,<9
+
 # [email] pulls email-validator, which EmailStr needs.
 pydantic[email]
 pydantic-settings

@@ -118,9 +118,102 @@ SQLAlchemy's `Session` already implements Unit of Work and Identity Map; wrappin
 
 `services/` exists for a narrower reason: `record_sale` owns an invariant (decrement, snapshot, insert, atomically) that must live in exactly one place once both a REST endpoint and a CSV importer call it.
 
-### Search: Postgres full-text first, Elasticsearch behind the same interface
+### Search: two backends behind one interface
 
-Search sits behind a `SearchService` protocol. The first implementation uses `tsvector` + GIN with `pg_trgm` for partial matches, avoiding a second datastore and an index-sync problem before search exists at all. An Elasticsearch implementation slots in behind the same interface, selected by configuration.
+`SearchService` is a `Protocol` with one method: ranked item ids for a query,
+scoped to a user. `PostgresSearchService` is the default; `ElasticSearchService`
+is selected with `SEARCH_BACKEND=elasticsearch`. Ids rather than rows,
+deliberately: an external index has no ORM objects to return, and resolving
+ids against Postgres means a result can be stale (an item indexed then deleted
+simply drops out of the `IN()` lookup) but never wrong.
+
+The behavioural test suite is parametrized over both backends. The same
+assertions (stemming, prefix, typo, phrase, OR, exclusion, ranking, tenancy)
+must pass against each, so a divergence is a failing test rather than a
+surprise in production. That is what makes the interface real.
+
+One rule lives above both backends, in `search/base.py`: fuzzy and prefix
+matching run only for a single bare word. The exact branch honours `-dunk`;
+the fuzzy branch, OR-ed in, would let "Nike Dunk Low Panda" back through
+because the raw string is still similar to it. A query with spaces or
+operators is one the user finished typing; fuzzy matching exists for the
+half-typed word before that.
+
+**Postgres.** A stored generated `tsvector` (name weighted A, source B, size C)
+with a GIN index, `websearch_to_tsquery` for operators, `ts_rank_cd` for
+proximity-aware ranking, and `pg_trgm` `word_similarity` for bare words. The
+generated column qualifies where `quantity_remaining` did not: same-row inputs
+and an `IMMUTABLE` expression (the two-argument `to_tsvector`; the one-argument
+form reads a session setting and is only `STABLE`).
+
+**Elasticsearch.** Explicit mappings with `dynamic: strict`, so an unexpected
+field is an indexing error rather than a silently guessed type that cannot be
+changed later. The `item_text` analyzer (lowercase, ASCII folding, English
+stopwords, English stemmer) mirrors Postgres's `english` configuration so both
+backends reduce "hoodies" and "Hoodie" to `hoodi`. `name.prefix` is an
+edge-ngram subfield (2 to 15 chars) with a non-ngram search analyzer:
+ngramming the query too would make "jo" match everything containing "j".
+`user_id` is a `keyword` used in a `bool.filter` clause, a yes/no test with no
+bearing on score, and filter clauses are cached. Field boosts
+`name^3 source^2 size` mirror the tsvector weights. Queries use
+`simple_query_string` (never raises on user input; supports phrases, `-`, and
+`|`) plus, for bare words, a prefix match and `fuzziness: AUTO`.
+
+The index is addressed through an alias. Reindexing builds
+`stockpile-items-<ms>` from Postgres, refreshes it, and swaps the alias in a
+single `_aliases` call: readers never see a half-built index, and a bad
+mapping change is rolled back by swapping again. The old index is deleted after
+the swap.
+
+### Elasticsearch consistency: a transactional outbox
+
+Writing to Postgres and then to the index is rejected. If the second write
+fails, or the process dies between the two, the datastores diverge and nothing
+records that they did.
+
+Every item change instead writes a `search_outbox` row **in the same
+transaction**: either both land or neither does. Only changes to indexed
+columns (`name`, `source`, `size`) enqueue; a cost or quantity edit does not.
+Deletion goes through `services.inventory.delete_lot` for the same reason:
+the delete and its outbox row must commit together, which a router calling
+`db.delete()` directly cannot guarantee.
+
+A drainer applies pending rows:
+
+- `SELECT ... FOR UPDATE SKIP LOCKED`: several drainers can run without
+  double-applying or queueing on the same rows.
+- Multiple rows for one item collapse to its final state.
+- The document is read from Postgres at drain time, not stored on the row: the
+  row says *this item changed*, the database says what it is now. An `index`
+  row for an item deleted in the meantime becomes a delete.
+- External versioning: each document's version is `updated_at` in epoch
+  milliseconds with `version_type=external_gte`, so applying rows out of order
+  or twice converges on the newest state. A 409 from a stale write and a 404
+  from deleting a missing document are both treated as success; the index is
+  already in the desired state.
+- Rows are marked processed only on success. On failure `attempts` and
+  `last_error` are recorded and the row stays pending; an unreachable cluster
+  loses nothing.
+
+The drainer runs inside the API process's lifespan every `SEARCH_SYNC_INTERVAL`
+seconds. Because the outbox is the queue, moving it to a dedicated worker, or
+several, changes nothing else. `python -m app.search.cli drain|reindex|status`
+exposes the same operations to an operator.
+
+Staleness is bounded: the index lags Postgres by at most the sync interval plus
+Elasticsearch's refresh interval (1 s by default). Because results are ids
+resolved against Postgres, the lag can hide a new item briefly but cannot show
+a deleted one.
+
+If the cluster is unreachable, `ElasticSearchService` logs a warning and
+delegates to `PostgresSearchService`. An unreachable cluster at startup is
+logged, not fatal. The application degrades to its source of truth rather than
+to an error.
+
+*Deliberately not done:* a dead-letter queue (rows retry indefinitely;
+`attempts` and `last_error` are the operator's signal), locking during reindex
+(an item changed mid-reindex is corrected by the next drain), replicas, and
+cluster security, the last two because this runs on a laptop.
 
 ## Indexes
 
@@ -160,3 +253,4 @@ Reference data is seeded by an idempotent script rather than a migration, so it 
 - Single currency. Real multi-currency requires a stored FX rate per transaction.
 - Sales are hard-deleted; accounting-correct voiding would use a `voided_at` soft delete.
 - No Row-Level Security; tenancy is enforced by composite FKs and the API layer.
+- Search outbox rows retry without limit; there is no dead-letter queue.
