@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Undo2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Undo2 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 import { Amount, Button, Profit } from "../components/ui";
 
@@ -17,6 +17,7 @@ export default function Sales() {
   const [page, setPage] = useState(1);
   const [voiding, setVoiding] = useState(null);
   const [refresh, setRefresh] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -29,6 +30,18 @@ export default function Sales() {
       cancelled = true;
     };
   }, [page, refresh]);
+
+  async function onExport() {
+    setExporting(true);
+    setError(null);
+    try {
+      await api.exportSales();
+    } catch {
+      setError("Could not export. Try again.");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   async function onVoid(sale) {
     // Voiding returns units to the lot, so it changes inventory too. Confirm
@@ -61,6 +74,12 @@ export default function Sales() {
         {total > 0 && (
           <span className="tabular text-sm text-muted">{total} recorded</span>
         )}
+        <div className="ml-auto">
+          <Button onClick={onExport} disabled={exporting || total === 0}>
+            <Download className="size-4" aria-hidden="true" />
+            {exporting ? "Exporting" : "Export CSV"}
+          </Button>
+        </div>
       </div>
 
       {error && (

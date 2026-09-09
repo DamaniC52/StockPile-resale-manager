@@ -12,7 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.routers import auth, dashboard, items, marketplaces, sales
+from app.api.routers import auth, dashboard, exports, items, marketplaces, sales
 from app.core.config import get_settings
 from app.db.session import SessionLocal, get_db
 from app.search import ElasticIndexer, get_indexer
@@ -83,6 +83,7 @@ app.include_router(items.router, prefix="/api")
 app.include_router(sales.router, prefix="/api")
 app.include_router(marketplaces.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
+app.include_router(exports.router, prefix="/api")
 
 
 @app.get("/health", tags=["meta"])

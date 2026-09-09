@@ -1,0 +1,62 @@
+# Render Blueprint: the API service.
+#
+# Apply with Render's "New Blueprint Instance" pointed at this repo. Everything
+# except the frontend lives here; the frontend deploys to Vercel (vercel.json).
+#
+# The database is deliberately NOT provisioned here. Render's free Postgres is
+# deleted 30 days after creation (14-day grace period), which would silently
+# break a link on a resume. Neon's free tier does not expire and does not pause
+# idle projects, so DATABASE_URL is set by hand to a Neon connection string.
+
+services:
+  - type: web
+    name: stockpile-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    healthCheckPath: /health
+
+    buildCommand: pip install --upgrade pip && pip install -r requirements.lock.txt
+
+    # Migrations run before the new instance takes traffic, and separately from
+    # the start command: a failed migration should abort the deploy rather than
+    # crash-loop a running service. Seeds are idempotent, so re-running is safe.
+    preDeployCommand: >
+      alembic upgrade head &&
+      python -m app.db.seed &&
+      python -m app.db.demo
+
+    # One worker on the free plan: 512 MB will not hold more, and the in-memory
+    # rate limiter is per worker anyway.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.12"
+
+      # Paste the Neon connection string in the Render dashboard. sync: false
+      # keeps it out of the repo. The pooled endpoint is the right one: Render
+      # restarts free instances often, and Neon's pooler absorbs the reconnects.
+      # Any of postgres:// or postgresql:// is fine; Settings rewrites the
+      # scheme to postgresql+psycopg:// on the way in.
+      - key: DATABASE_URL
+        sync: false
+
+      # Generated once by Render and never shown in the repo. Changing it
+      # invalidates every issued token, which is the intended behaviour.
+      - key: JWT_SECRET
+        generateValue: true
+
+      # Postgres full-text, not Elasticsearch: a single node needs ~1 GB of
+      # heap, which does not fit here. The SearchService interface means this
+      # is a configuration change rather than a code change.
+      - key: SEARCH_BACKEND
+        value: postgres
+
+      # Empty on purpose. Vercel rewrites /api to this service, so the browser
+      # only ever sees its own origin and CORS never applies.
+      - key: CORS_ORIGINS
+        value: ""
+
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "60"

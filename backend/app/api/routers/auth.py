@@ -1,10 +1,11 @@
 """Signup, login, and current-user routes."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import CurrentUser, DbSession
+from app.core.ratelimit import rate_limit_auth
 from app.core.security import (
     DUMMY_HASH,
     create_access_token,
@@ -17,7 +18,12 @@ from app.schemas.user import Token, UserCreate, UserLogin, UserRead
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-@router.post("/signup", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/signup",
+    response_model=UserRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_auth)],
+)
 def signup(payload: UserCreate, db: DbSession) -> User:
     user = User(
         email=payload.email,
@@ -38,7 +44,7 @@ def signup(payload: UserCreate, db: DbSession) -> User:
     return user
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=Token, dependencies=[Depends(rate_limit_auth)])
 def login(payload: UserLogin, db: DbSession) -> Token:
     user = db.scalar(
         select(User).where(func.lower(User.email) == payload.email.lower())

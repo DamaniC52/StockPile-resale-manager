@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Plus, Search, Share2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Plus, Search } from "lucide-react";
 import { api } from "../lib/api";
 import { Amount, Badge, Button, FilterChip, Segmented } from "../components/ui";
 import AddItemForm from "../components/AddItemForm";
@@ -43,6 +43,7 @@ export default function Inventory() {
   // Bumping this re-runs the fetch effect after a write, so the table and the
   // portfolio figures reflect the change without a full reload.
   const [refresh, setRefresh] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +68,24 @@ export default function Inventory() {
   const pages = Math.max(1, Math.ceil(total / LIMIT));
   const filtered = stock !== "all" || condition !== "";
 
+  async function onExport() {
+    setExporting(true);
+    setError(null);
+    try {
+      // The current filters, but not the search term: an export is a record of
+      // what you hold, and quietly exporting only search matches produces an
+      // incomplete spreadsheet someone then relies on.
+      await api.exportItems({
+        in_stock: stock === "all" ? undefined : stock === "in",
+        condition: condition || undefined,
+      });
+    } catch {
+      setError("Could not export. Try again.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   function reset() {
     setStock("all");
     setCondition("");
@@ -78,13 +97,9 @@ export default function Inventory() {
       <div className="flex flex-wrap items-center gap-3 border-b border-line px-6 py-3.5">
         <h1 className="expanded text-lg font-semibold">Inventory</h1>
         <div className="ml-auto flex items-center gap-2">
-          <Button>
-            <Share2 className="size-4" aria-hidden="true" />
-            Share
-          </Button>
-          <Button>
+          <Button onClick={onExport} disabled={exporting || total === 0}>
             <Download className="size-4" aria-hidden="true" />
-            Export
+            {exporting ? "Exporting" : "Export CSV"}
           </Button>
           <Button variant="primary" onClick={() => setAdding(true)}>
             <Plus className="size-4" aria-hidden="true" />

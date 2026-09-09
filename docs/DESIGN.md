@@ -215,6 +215,29 @@ to an error.
 (an item changed mid-reindex is corrected by the next drain), replicas, and
 cluster security, the last two because this runs on a laptop.
 
+### Deployment shapes two decisions
+
+**Elasticsearch does not run in production.** A single node wants ~1 GB of heap,
+more than a free instance has. `SEARCH_BACKEND=postgres` there;
+`elasticsearch` locally and in CI. The interface was built before the second
+implementation existed, so this is a configuration change — which is the
+concrete argument for having built it that way, rather than the usual
+hypothetical one.
+
+**Rate limiting is in-process.** A sliding window per client IP on the auth
+routes, applied as a route dependency so the limited endpoints are visible at
+the route rather than hidden in middleware. The window is per worker and a
+restart forgets it; Redis is the fix when there is more than one instance. The
+client key comes from `X-Forwarded-For` because Render proxies, and that header
+is spoofable by anyone reaching the origin directly — acceptable, because this
+limits casual abuse and is not an authorization boundary.
+
+**Login is constant-time.** Identical messages for "no such email" and "wrong
+password" are defeated by timing if the unknown-email branch skips bcrypt: ~1 ms
+versus ~250 ms is a reliable oracle for which addresses are registered.
+Verifying against a dummy hash when no user matches makes both branches do the
+same work.
+
 ## Indexes
 
 Postgres does not automatically index foreign keys — only primary keys and unique constraints. Every index below serves a named query.
@@ -254,3 +277,5 @@ Reference data is seeded by an idempotent script rather than a migration, so it 
 - Sales are hard-deleted; accounting-correct voiding would use a `voided_at` soft delete.
 - No Row-Level Security; tenancy is enforced by composite FKs and the API layer.
 - Search outbox rows retry without limit; there is no dead-letter queue.
+- Rate limiting is per process; it does not hold across multiple workers or instances.
+- `products` and `price_snapshots` are modelled and indexed but unused: nothing creates products yet.

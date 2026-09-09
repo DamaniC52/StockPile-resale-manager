@@ -13,6 +13,7 @@ EXPECTED = {
     "/api/items", "/api/items/{item_id}", "/api/items/{item_id}/quantity",
     "/api/sales", "/api/sales/{sale_id}",
     "/api/marketplaces",
+    "/api/export/items.csv", "/api/export/sales.csv",
     "/api/dashboard/summary", "/api/dashboard/profit-over-time",
     "/api/dashboard/by-marketplace", "/api/dashboard/inventory-aging",
     "/api/dashboard/top-items",

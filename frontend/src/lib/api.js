@@ -52,6 +52,47 @@ async function request(path, { method = "GET", body, params } = {}) {
   return payload;
 }
 
+
+/**
+ * Download a file from an authenticated endpoint.
+ *
+ * A plain <a href> cannot carry the Authorization header, so the response is
+ * fetched, turned into a blob, and handed to a synthetic link. The object URL
+ * is revoked afterwards or the blob stays in memory for the life of the page.
+ */
+export async function downloadFile(path, params) {
+  const url = new URL(`/api${path}`, window.location.origin);
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, v);
+    }
+  }
+
+  const token = getToken();
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) {
+    if (res.status === 401) clearToken();
+    throw new ApiError(res.status, "Export failed");
+  }
+
+  // Prefer the server's filename from Content-Disposition; it carries the date.
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match?.[1] ?? path.split("/").pop();
+
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
+}
+
 export const api = {
   signup: (email, password) =>
     request("/auth/signup", { method: "POST", body: { email, password } }),
@@ -66,6 +107,9 @@ export const api = {
   deleteItem: (id) => request(`/items/${id}`, { method: "DELETE" }),
 
   listMarketplaces: () => request("/marketplaces"),
+
+  exportItems: (params) => downloadFile("/export/items.csv", params),
+  exportSales: () => downloadFile("/export/sales.csv"),
 
   dashboardSummary: (range) => request("/dashboard/summary", { params: { range } }),
   profitOverTime: (range, bucket) =>

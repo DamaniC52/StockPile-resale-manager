@@ -6,6 +6,8 @@ Resellers mostly run on spreadsheets, which handle *what you own* but fall apart
 
 **Stack:** FastAPI · PostgreSQL 16 · SQLAlchemy 2.0 · Alembic · Elasticsearch 8 · React 19 · Vite · Tailwind 4 · Recharts
 
+**Live demo:** _add your Vercel URL here_ — sign in as `demo@stockpile.app` / `demo-password-123`, or create an account. The demo data resets on each deploy.
+
 ![Portfolio view: realized profit of $352.85 charted as a step function over three months](docs/screenshots/portfolio.png)
 
 Profit is charted as a step function because it changes only when a sale is recorded, not continuously. The drop in late July is a real loss — a tee that sold for less than it cost.
@@ -228,6 +230,79 @@ A $20 inbound shipping charge across a lot of three is $6.6667 per unit — roun
 
 ---
 
+## Deploying
+
+Three free services: Postgres on Neon, the API on Render (`render.yaml`), the
+frontend on Vercel (`frontend/vercel.json`).
+
+```bash
+# 1. Neon: create a project, copy the POOLED connection string.
+#
+# 2. Render: New > Blueprint, point it at this repo. Paste the Neon string as
+#    DATABASE_URL when prompted. render.yaml generates JWT_SECRET, runs
+#    migrations and seeds the demo account.
+#
+# 3. Vercel: New Project, root directory `frontend`. Then edit vercel.json and
+#    replace the rewrite host with your Render service URL.
+```
+
+The database is Neon rather than Render's own Postgres, and that is the one
+choice here worth explaining. **Render deletes a free Postgres 30 days after
+creation** (with a 14-day grace period). For a link on a resume that is a
+failure mode with no warning: the demo works when you send the application and
+is gone by the time anyone opens it. Neon's free tier does not expire and does
+not pause idle projects — it scales compute to zero instead — so the link keeps
+working.
+
+Nothing in the code changed to allow this. `DATABASE_URL` is normalized to the
+`postgresql+psycopg://` scheme by a validator on `Settings`, because managed
+providers hand out `postgres://` (which SQLAlchemy rejects outright) or
+`postgresql://` (which resolves to psycopg2, not installed here). Neon's
+`?sslmode=require` passes through untouched.
+
+Three decisions in that setup are worth knowing about.
+
+**Search runs on Postgres in production, not Elasticsearch.** A single-node
+cluster wants roughly a gigabyte of heap, which does not fit on a free instance.
+Because search sits behind the `SearchService` interface, that is a
+configuration change (`SEARCH_BACKEND=postgres`) rather than a code change — the
+Elasticsearch backend still runs locally and in CI, verified by the same
+parametrized tests. This is the payoff of the abstraction, and it is a real
+constraint rather than a hypothetical one.
+
+**The frontend proxies `/api` to the API rather than calling it cross-origin.**
+Vercel rewrites `/api/:path*` to the Render service, so the browser only ever
+talks to one origin: no CORS preflights, and the JWT is never sent cross-site.
+`CORS_ORIGINS` is deliberately empty in production.
+
+**Migrations run in `preDeployCommand`, not at startup.** A failed migration
+should abort the deploy, not crash-loop a live service. The seeds that follow
+are idempotent, so redeploying is safe.
+
+### What deploying changed
+
+Making the app internet-facing moved two items off the "deliberately out of
+scope" list:
+
+- **Rate limiting on `/auth/login` and `/auth/signup`** — a sliding window per
+  client IP, applied as a route dependency. It is in-process and in-memory,
+  which is worth stating plainly: the window is per worker, and a restart
+  forgets it. Redis would fix both. For a single free instance whose threat is
+  a script guessing passwords, it raises the cost enough to matter without
+  adding a datastore.
+- **A constant-time login path.** Identical error messages are not enough on
+  their own: an unknown email would skip bcrypt entirely and answer in about a
+  millisecond, while a known one would take ~250 ms. Timing alone would leak
+  which addresses are registered. The login path now verifies against a dummy
+  hash when no user matches, so both branches do the same work.
+
+Free-tier caveats, since a recruiter may be the one clicking the link: the
+Render API instance sleeps after inactivity and takes 30–60 seconds to wake, and
+Neon's compute scales to zero after 5 minutes idle, adding roughly a second to
+the first query. Neither deletes anything.
+
+Still out of scope: email verification, password reset, and refresh tokens.
+
 ## Layout
 
 ```
@@ -238,6 +313,7 @@ backend/
     services/     Multi-step writes that own an invariant
     queries/      Read-side aggregations; returns rows, not entities
     search/       SearchService protocol, Postgres and Elasticsearch backends, outbox
+    core/         Settings, security, rate limiting
     api/          Routers and shared dependencies
     db/           Engine, session, declarative base, seed data
   alembic/        Migrations
@@ -248,14 +324,15 @@ frontend/
     components/   Forms, modal, shared UI
     lib/          API client, auth and theme context
 docs/DESIGN.md    Data model and architecture decisions
+render.yaml       API + managed Postgres blueprint
 ```
 
 There is no repository layer, deliberately. SQLAlchemy's `Session` already implements Unit of Work and Identity Map, and the schema is intentionally Postgres-shaped, so there is no second backend to abstract over. `services/` exists for a narrower reason: `record_sale` owns an invariant that must live in exactly one place once both a REST endpoint and an importer call it.
 
 ## Status
 
-Working: authentication, item CRUD with filtering and pagination, sales with profit calculation, full-text search with fuzzy matching on either Postgres or Elasticsearch, a dashboard computed entirely in SQL (profit over time, profit by marketplace, inventory aging), light and dark themes.
+Working: authentication, item CRUD with filtering and pagination, sales with profit calculation, full-text search with fuzzy matching on either Postgres or Elasticsearch, a dashboard computed entirely in SQL (profit over time, profit by marketplace, inventory aging), streaming CSV export, light and dark themes, and a responsive layout.
 
-Not built yet: a scheduled market-price poller.
+Not built yet: market price tracking. The `products` table and `price_snapshots` exist and are indexed for it, but nothing creates products yet, so a poller would have nothing to price. That needs a products API and a way to link a lot to a catalog entry before the scheduled job is worth writing.
 
-Deliberately out of scope, since this is not deployed publicly: email verification, password reset, refresh tokens, and rate limiting on the login endpoint. All four would be required before exposing it to real users.
+Deliberately out of scope: email verification, password reset, and refresh tokens. Rate limiting and a constant-time login path were added when the app became internet-facing; see Deploying.
