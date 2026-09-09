@@ -13,6 +13,10 @@ services:
     name: stockpile-api
     runtime: python
     plan: free
+    # Match the Neon project's region. A database in Ohio and an API in Oregon
+    # puts a cross-country round trip on every query. Region cannot be changed
+    # after a service is created, only recreated.
+    region: ohio
     rootDir: backend
     healthCheckPath: /health
 
