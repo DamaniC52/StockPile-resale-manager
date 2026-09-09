@@ -7,7 +7,7 @@
     {
       "//": "Proxy the API through this origin. The browser only ever talks to the Vercel domain, so CORS never applies and the JWT is never sent cross-origin. Replace the host with your Render service URL.",
       "source": "/api/:path*",
-      "destination": "https://stockpile-api.onrender.com/api/:path*"
+      "destination": "https://stockpile-api-070q.onrender.com/api/:path*"
     },
     {
       "//": "SPA fallback. Without it, loading /inventory directly returns 404 because no such file exists; the router only works after index.html has booted.",
