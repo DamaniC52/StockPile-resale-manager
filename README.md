@@ -1,338 +1,144 @@
 # StockPile
 
-Inventory and profit/loss tracking for resellers — sneakers, streetwear and collectibles bought and sold across eBay, StockX, Depop and Grailed.
+Inventory and profit tracking for resellers — sneakers, streetwear and collectibles sold across eBay, StockX, Depop and Grailed.
 
-Resellers mostly run on spreadsheets, which handle *what you own* but fall apart on *what you actually made*: fees differ per platform, shipping comes out of your pocket, and a lot bought as five pairs sells in three separate transactions months apart. StockPile tracks purchases as lots, records partial sales against them, and computes net profit per sale after every fee.
+Most resellers track this in a spreadsheet, which handles *what you own* but falls apart on *what you actually made*. Fees differ per platform, shipping comes out of your pocket, and five pairs bought together often sell in three transactions months apart. StockPile records purchases as lots, logs partial sales against them, and computes net profit after every fee.
 
-**Stack:** FastAPI · PostgreSQL 16 · SQLAlchemy 2.0 · Alembic · Elasticsearch 8 · React 19 · Vite · Tailwind 4 · Recharts
+**Stack:** FastAPI · PostgreSQL · SQLAlchemy · Alembic · Elasticsearch · React · Vite · Tailwind
 
-**Live demo:** _add your Vercel URL here_ — sign in as `demo@stockpile.app` / `demo-password-123`, or create an account. The demo data resets on each deploy.
+**Live demo:** _add your Vercel URL here_ — sign in as `demo@stockpile.app` / `demo-password-123`. The API sleeps when idle, so the first load can take 30 seconds.
 
-![Portfolio view: realized profit of $352.85 charted as a step function over three months](docs/screenshots/portfolio.png)
+![Portfolio view showing realized profit charted over three months](docs/screenshots/portfolio.png)
 
-Profit is charted as a step function because it changes only when a sale is recorded, not continuously. The drop in late July is a real loss — a tee that sold for less than it cost.
+![Inventory table listing lots with size, status, units remaining and capital tied up](docs/screenshots/inventory.png)
 
-![Inventory table listing lots with size, source, status, units remaining, unit cost and capital tied up](docs/screenshots/inventory.png)
+Each row is a lot, not a single item, so `1/4` means one of four units is still unsold.
 
-Each row is a lot rather than a single unit, so `1/4` means one of four units is still unsold.
-
-![Add inventory dialog with fields for item, size, condition, units, cost per unit and purchase fees](docs/screenshots/add-item.png)
-
-Purchase fees are recorded against the whole lot, not per unit, and are divided across sales as they happen.
-
----
+![Add inventory dialog](docs/screenshots/add-item.png)
 
 ## Running it
 
-Requires Docker and [uv](https://github.com/astral-sh/uv). Node 20+ for the frontend.
+Needs Docker, [uv](https://github.com/astral-sh/uv), and Node 20+.
 
 ```bash
-# 1. Database (Elasticsearch is optional; see Search below)
 docker compose up -d db
 
-# 2. Backend
 cd backend
 uv venv && uv pip install -r requirements.txt
-# create .env with the variables listed below
+# create .env with DATABASE_URL and JWT_SECRET (see below)
 .venv/Scripts/alembic upgrade head
 .venv/Scripts/python -m app.db.seed
 .venv/Scripts/python -m uvicorn app.main:app --reload
 
-# 3. Frontend
 cd ../frontend
-npm install
-npm run dev
+npm install && npm run dev
 ```
 
-The app runs at `localhost:5173`; the API at `localhost:8000` with interactive docs at `/docs`. Vite proxies `/api` to the backend, so CORS doesn't apply in development.
-
-### Environment variables
+App at `localhost:5173`, API docs at `localhost:8000/docs`.
 
 `backend/.env`:
 
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | `postgresql+psycopg://stockpile:dev@localhost:5432/stockpile` — the `+psycopg` suffix selects psycopg 3 |
-| `JWT_SECRET` | Signs access tokens. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
-| `JWT_ALGORITHM` | Defaults to `HS256` |
-| `ACCESS_TOKEN_EXPIRE_MINUTES` | Defaults to `60` |
-| `CORS_ORIGINS` | Comma-separated. Only used when frontend and API are on different domains |
-| `SEARCH_BACKEND` | `postgres` (default) or `elasticsearch` |
-| `ELASTICSEARCH_URL` | Defaults to `http://localhost:9200` |
-| `ELASTICSEARCH_INDEX` | Alias name, default `stockpile-items`. Reindexing swaps what it points at |
-| `SEARCH_SYNC_INTERVAL` | Seconds between outbox drains, default `2` |
-
-To search with Elasticsearch instead of Postgres:
-
-```bash
-docker compose up -d elasticsearch          # ~40s to become healthy
-SEARCH_BACKEND=elasticsearch .venv/Scripts/python -m app.search.cli reindex
-SEARCH_BACKEND=elasticsearch .venv/Scripts/python -m uvicorn app.main:app --reload
+```
+DATABASE_URL=postgresql+psycopg://stockpile:dev@localhost:5432/stockpile
+JWT_SECRET=<python -c "import secrets; print(secrets.token_urlsafe(32))">
+SEARCH_BACKEND=postgres          # or elasticsearch
 ```
 
-From then on the API keeps the index in sync itself. `python -m app.search.cli status` shows the alias target and any pending changes.
-
-### Tests
+Tests run against real Postgres, not SQLite or mocks, since most of what matters here is database behaviour:
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-Tests run against a real Postgres instance in a separate `stockpile_test` database, not SQLite and not mocks — the behaviours that matter most here are database behaviours. The search tests run against both backends; the Elasticsearch cases skip, rather than fail, when the container is not running.
+81 tests. The Elasticsearch ones skip if the container isn't running.
 
----
+## Notes on a few decisions
 
-## The interesting parts
+Full reasoning is in [`docs/DESIGN.md`](docs/DESIGN.md).
 
-Full reasoning, including the options rejected and what each choice costs, is in [`docs/DESIGN.md`](docs/DESIGN.md).
+### Overselling
 
-### Inventory is modelled as lots, and overselling is prevented in one statement
+An item row is a lot of N units, so two people buying the last one at the same time is a real problem. Read the count, check it, write it back, and two requests both see "1 remaining" and both write "0".
 
-An `items` row is *N identical units* bought together, and sales draw partial quantities from it. That makes concurrent sales of the last unit a real problem: two requests reading "1 remaining" and both writing "0" is a lost update, and it sells inventory that doesn't exist.
-
-The write path is a single conditional `UPDATE`:
+The write is one statement instead:
 
 ```sql
 UPDATE items SET quantity_remaining = quantity_remaining - :n
 WHERE id = :id AND user_id = :user AND quantity_remaining >= :n
-RETURNING quantity, quantity_remaining, unit_cost, acquisition_fee_total
 ```
 
-Zero rows updated *is* the rejection signal. Under Postgres's READ COMMITTED isolation, an `UPDATE` that meets a concurrently-modified row waits for that transaction and then re-evaluates its `WHERE` clause against the new row version, so the stock check cannot go stale.
+Zero rows updated means rejected. Under Postgres's default isolation, an UPDATE that hits a row another transaction just changed waits for it and re-checks the WHERE clause, so the stock test can't go stale.
 
-`tests/test_concurrency.py` runs eight threads against a lot of three and asserts exactly three succeed. Swapping in the naive read-then-write implementation makes it fail — eight units sold from a lot of three, **with zero constraint violations**, because every individual write was a legal value based on a stale read. A `CHECK` constraint prevents impossible values; it does not prevent lost updates. Both are needed and they defend different things.
+`tests/test_concurrency.py` runs 8 threads against a lot of 3 and asserts exactly 3 succeed. The naive version fails it by selling 8 units — with no constraint violations, because every individual write was a legal value based on a stale read. A CHECK constraint stops impossible values; it doesn't stop lost updates.
 
-### `quantity_remaining` is denormalized so a constraint becomes possible
+### Dashboard queries
 
-It could be derived from `quantity - SUM(sales.quantity_sold)`. That version can never drift, but it also can't be constrained — a `CHECK` cannot reference another table, so overselling would be preventable only in application code. Storing the counter makes `quantity_remaining >= 0` row-local, and therefore enforceable by Postgres. Denormalization here buys a correctness guarantee, not speed.
+Profit used to be summed in the browser, which capped out at 100 records and shipped every sale over the wire. It's one grouped SQL query now.
 
-### Cross-tenant access is unrepresentable, not merely checked
+On a 300,000-row benchmark with `EXPLAIN (ANALYZE, BUFFERS)`:
 
-`user_id` is denormalized onto `listings` and `sales` so tenant filtering is a single-table index scan. The consistency risk that creates is closed by a composite foreign key:
+| | With index | Without |
+|---|---|---|
+| Buffers | 430 | 4,017 |
+| CPU workers | 1 | 3 |
+| Rows discarded | 0 | ~274,000 |
+| Time | 37 ms | 45 ms |
+
+The wall clock barely moved, which is the interesting part — Postgres kept the sequential scan competitive by throwing two extra cores at it. Buffers are the honest number on an idle machine.
+
+### Search
+
+Search sits behind an interface with two implementations: Postgres full-text and Elasticsearch. The same test suite runs against both and asserts identical results.
+
+Postgres uses a generated `tsvector` column with a GIN index, plus `pg_trgm` for typos, so "hoodies" finds "Hoodie" and "jordn" finds "Jordan". On 120,000 rows a selective query went from 2.7 ms to 0.17 ms.
+
+It's slower than `ILIKE` on broad queries, though — ranking 10,000 matches costs more than not ranking them. Worth saying, since the win is stemming and relevance, not raw speed everywhere.
+
+Production runs the Postgres backend because a single Elasticsearch node wants about a gigabyte of heap and doesn't fit a free instance. That's a config change rather than a code change, which is the actual argument for having built the interface.
+
+Keeping Elasticsearch in sync uses a transactional outbox: every item change writes a row in the same transaction as the change itself, and a background loop applies them. Dual-writing would let the two stores drift silently when the second write fails.
+
+### Tenant isolation
+
+`user_id` is denormalized onto sales and listings so filtering is a single-table index scan. A composite foreign key stops that from drifting:
 
 ```sql
 FOREIGN KEY (item_id, user_id) REFERENCES items(id, user_id)
 ```
 
-A sale claiming user 4 while referencing an item owned by user 7 is rejected by the database. IDOR — OWASP API1, Broken Object Level Authorization — becomes a constraint violation rather than a class of application bug. The API layer adds defense in depth: ownership-scoped routes resolve objects through one dependency that filters on `user_id` and returns **404, not 403**, since 403 would confirm the row exists and let an attacker enumerate valid ids.
-
-### Cost basis is snapshotted onto each sale
-
-`sales` stores its own `unit_cost_snapshot`, so correcting an item's cost in June cannot rewrite March's reported profit — the same reason an invoice line copies unit price rather than joining to a product table. It also makes every profit aggregation a single-table `SUM` with no joins.
-
-### Profit is defined once and computed in either language
-
-`revenue`, `cogs` and `net_profit` are SQLAlchemy hybrid properties with both a Python body and a SQL expression. `sale.net_profit` runs in Python; `func.sum(Sale.net_profit)` compiles to SQL and aggregates in the database instead of loading every row into memory.
-
-### The dashboard aggregates in Postgres, and the index earns its place
-
-Profit over time is one grouped query rather than a fetch-and-sum in the browser:
-
-```sql
-SELECT date_trunc('month', sold_at) AS period, SUM(...) AS net_profit
-FROM sales WHERE user_id = :user AND sold_at >= :since
-GROUP BY period ORDER BY period
-```
-
-Benchmarked on 300,000 sales across four tenants, 60,000 of them the caller's,
-with `EXPLAIN (ANALYZE, BUFFERS)`:
-
-| | With `ix_sales_user_id_sold_at` | Index scans disabled |
-|---|---|---|
-| Access path | Bitmap Index Scan | Parallel Seq Scan |
-| **Shared buffers** | **430** | 4,017 |
-| CPU workers | 1 | 3 |
-| Rows read then discarded | 0 | ~274,000 |
-| Execution time | 37 ms | 45 ms |
-
-The wall-clock difference is small, and that is the interesting part: Postgres
-kept the sequential scan competitive by launching two extra parallel workers.
-The index does the same work with **9x less I/O on a single core** where the
-scan needs three, and reads none of the other tenants' rows. On an idle laptop
-that looks like 8 ms; under concurrent load those cores are not free.
-
-Buffers, not elapsed time, are the honest measure of a query on a machine with
-spare CPU.
-
-### Search is full-text, and the benchmark is not the one you'd expect
-
-Item search runs through a `SearchService` protocol with a Postgres
-implementation today and an Elasticsearch one behind the same interface later.
-Both return ranked ids; rows still come from Postgres, so results can never go
-stale relative to the database.
-
-The searchable text is a **stored generated column**:
-
-```sql
-search_vector tsvector GENERATED ALWAYS AS (
-  setweight(to_tsvector('english', coalesce(name,   '')), 'A') ||
-  setweight(to_tsvector('english', coalesce(source, '')), 'B') ||
-  setweight(to_tsvector('english', coalesce(size,   '')), 'C')
-) STORED
-```
-
-Postgres maintains it on every write, so it cannot drift — no trigger and no
-application code. Note this is the same mechanism ruled out for
-`quantity_remaining`: a generated expression must be `IMMUTABLE` and reference
-only its own row. Summing child rows fails both tests; this passes both. (The
-two-argument `to_tsvector` matters — the one-argument form reads a session
-setting and is only `STABLE`.)
-
-`setweight` ranks a name match above a source match, so searching "Supreme"
-puts the Supreme hoodie above a lot merely *bought from* Supreme.
-
-Full-text alone cannot match a half-typed word, so a `pg_trgm`
-`word_similarity` branch runs alongside it for single bare words —
-`word_similarity`, not `similarity`, because the latter compares against the
-whole name: "jorda" against "Jordan 4 Retro Bred" scores 0.24 one way and 0.83
-the other.
-
-Measured on 120,000 lots with `EXPLAIN (ANALYZE, BUFFERS)`:
-
-| Query shape | `ILIKE '%…%'` | Full-text |
-|---|---|---|
-| Selective (`salomon fragment 481`) | 2.7 ms, 109 buffers | **0.17 ms, 15 buffers** |
-| Broad (~10,000 matches), ranked | 2.5 ms, 610 buffers | 19.4 ms, 1,258 buffers |
-
-Full-text is 16x faster on selective queries and **slower** on broad ones, and
-both numbers are worth stating. Ranking 10,000 matches by relevance costs more
-than not ranking them: `ILIKE` ordered by date stops after 50 rows, while
-relevance ordering has to score every match first. That is the price of ranked
-results, not a defect.
-
-The trigram index also turns out to make `ILIKE` itself indexable
-(`gin_trgm_ops` supports `ILIKE '%…%'`), so the migration improved the thing it
-replaced. The case for full-text here is stemming, ranking, and operator
-support — "hoodies" finding "Hoodie", and `-dunk` excluding it — not raw speed
-on every query shape.
-
-One behavioural difference to know: `ILIKE` matches substrings and full-text
-matches whole tokens, so `481` finds `4813` under `ILIKE` and not under
-full-text.
-
-### Elasticsearch is kept consistent through a transactional outbox
-
-Set `SEARCH_BACKEND=elasticsearch` and search runs against an Elasticsearch index — behind the same `SearchService` interface, verified by the same parametrized test suite. Writing to two datastores is where a feature like this usually goes wrong, so the sync path is the part worth reading.
-
-Dual writes (commit to Postgres, then index) are rejected: if the second write fails, or the process dies between them, the two silently diverge. Instead every item change writes a row to `search_outbox` **in the same transaction**, so either both land or neither does. A drainer applies pending rows: `SELECT ... FOR UPDATE SKIP LOCKED` lets several workers drain without double-applying, several changes to one item collapse to its final state, and the document is read from Postgres at drain time rather than from the row. Rows are marked processed only on success; on failure they stay pending with the error recorded, so an unreachable cluster loses nothing.
-
-Out-of-order and duplicate applies are made harmless with external versioning: each document carries `updated_at` as its version with `version_type=external_gte`, so a stale write is refused — and the refusal is treated as success, because the index already holds the newer state.
-
-The index is addressed through an alias. `python -m app.search.cli reindex` builds a new index from Postgres and swaps the alias in one call, so readers never see a half-built index and a bad mapping change rolls back by swapping again. Mappings are explicit with `dynamic: strict`; the analyzer mirrors Postgres's `english` configuration so both backends agree that "hoodies" is `hoodi`, and the same single-bare-word rule governs fuzzy matching on both.
-
-If the cluster is unreachable, `ElasticSearchService` logs and falls back to the Postgres implementation — the app degrades to its source of truth rather than to an error. Results are ids resolved against Postgres either way, so the index can lag (by at most the sync interval plus Elasticsearch's refresh interval) but can never show an item the database no longer has.
-
-Deliberately not done: a dead-letter queue (rows retry indefinitely; `attempts` and `last_error` are the operator's signal), locking during reindex (an item changed mid-reindex is corrected by the next drain), replicas, and cluster security — the last two because this runs on a laptop.
-
-### Flat purchase fees are allocated so the parts sum exactly
-
-A $20 inbound shipping charge across a lot of three is $6.6667 per unit — rounded, three shares total $20.01. The final sale of a lot absorbs the remainder instead, making the total exact by construction. Verified in `tests/test_sales.py`, including under concurrency.
-
----
+A sale claiming user 4 while pointing at user 7's item gets rejected by the database. Routes also return 404 rather than 403 for someone else's row, so IDs can't be probed.
 
 ## Deploying
 
-Three free services: Postgres on Neon, the API on Render (`render.yaml`), the
-frontend on Vercel (`frontend/vercel.json`).
+Postgres on Neon, API on Render (`render.yaml`), frontend on Vercel (`frontend/vercel.json`).
 
-```bash
-# 1. Neon: create a project, copy the POOLED connection string.
-#
-# 2. Render: New > Blueprint, point it at this repo. Paste the Neon string as
-#    DATABASE_URL when prompted. render.yaml generates JWT_SECRET, runs
-#    migrations and seeds the demo account.
-#
-# 3. Vercel: New Project, root directory `frontend`. Then edit vercel.json and
-#    replace the rewrite host with your Render service URL.
-```
+Neon rather than Render's own Postgres because Render deletes a free database 30 days after creation, which would quietly break the demo link. Neon's free tier doesn't expire.
 
-The database is Neon rather than Render's own Postgres, and that is the one
-choice here worth explaining. **Render deletes a free Postgres 30 days after
-creation** (with a 14-day grace period). For a link on a resume that is a
-failure mode with no warning: the demo works when you send the application and
-is gone by the time anyone opens it. Neon's free tier does not expire and does
-not pause idle projects — it scales compute to zero instead — so the link keeps
-working.
+Vercel rewrites `/api` to the Render service, so the browser only talks to one origin and CORS never applies.
 
-Nothing in the code changed to allow this. `DATABASE_URL` is normalized to the
-`postgresql+psycopg://` scheme by a validator on `Settings`, because managed
-providers hand out `postgres://` (which SQLAlchemy rejects outright) or
-`postgresql://` (which resolves to psycopg2, not installed here). Neon's
-`?sslmode=require` passes through untouched.
-
-Three decisions in that setup are worth knowing about.
-
-**Search runs on Postgres in production, not Elasticsearch.** A single-node
-cluster wants roughly a gigabyte of heap, which does not fit on a free instance.
-Because search sits behind the `SearchService` interface, that is a
-configuration change (`SEARCH_BACKEND=postgres`) rather than a code change — the
-Elasticsearch backend still runs locally and in CI, verified by the same
-parametrized tests. This is the payoff of the abstraction, and it is a real
-constraint rather than a hypothetical one.
-
-**The frontend proxies `/api` to the API rather than calling it cross-origin.**
-Vercel rewrites `/api/:path*` to the Render service, so the browser only ever
-talks to one origin: no CORS preflights, and the JWT is never sent cross-site.
-`CORS_ORIGINS` is deliberately empty in production.
-
-**Migrations run in `preDeployCommand`, not at startup.** A failed migration
-should abort the deploy, not crash-loop a live service. The seeds that follow
-are idempotent, so redeploying is safe.
-
-### What deploying changed
-
-Making the app internet-facing moved two items off the "deliberately out of
-scope" list:
-
-- **Rate limiting on `/auth/login` and `/auth/signup`** — a sliding window per
-  client IP, applied as a route dependency. It is in-process and in-memory,
-  which is worth stating plainly: the window is per worker, and a restart
-  forgets it. Redis would fix both. For a single free instance whose threat is
-  a script guessing passwords, it raises the cost enough to matter without
-  adding a datastore.
-- **A constant-time login path.** Identical error messages are not enough on
-  their own: an unknown email would skip bcrypt entirely and answer in about a
-  millisecond, while a known one would take ~250 ms. Timing alone would leak
-  which addresses are registered. The login path now verifies against a dummy
-  hash when no user matches, so both branches do the same work.
-
-Free-tier caveats, since a recruiter may be the one clicking the link: the
-Render API instance sleeps after inactivity and takes 30–60 seconds to wake, and
-Neon's compute scales to zero after 5 minutes idle, adding roughly a second to
-the first query. Neither deletes anything.
-
-Still out of scope: email verification, password reset, and refresh tokens.
+Rate limiting on the auth routes and a constant-time login path were added once this became internet-facing. The login one matters: identical error messages don't help if an unknown email skips bcrypt and answers in 1 ms while a real one takes 250 ms.
 
 ## Layout
 
 ```
-backend/
-  app/
-    models/       SQLAlchemy models, constraints and indexes
-    schemas/      Pydantic request/response contracts
-    services/     Multi-step writes that own an invariant
-    queries/      Read-side aggregations; returns rows, not entities
-    search/       SearchService protocol, Postgres and Elasticsearch backends, outbox
-    core/         Settings, security, rate limiting
-    api/          Routers and shared dependencies
-    db/           Engine, session, declarative base, seed data
-  alembic/        Migrations
-  tests/          Real-Postgres tests, including concurrency
-frontend/
-  src/
-    pages/        Portfolio, Inventory, sign-in
-    components/   Forms, modal, shared UI
-    lib/          API client, auth and theme context
-docs/DESIGN.md    Data model and architecture decisions
-render.yaml       API + managed Postgres blueprint
+backend/app/
+  models/     SQLAlchemy models, constraints, indexes
+  schemas/    Pydantic request/response types
+  services/   Writes that own an invariant
+  queries/    Read-side aggregations
+  search/     Search interface, both backends, outbox
+  api/        Routers and dependencies
+frontend/src/
+  pages/      Portfolio, Inventory, Sales, sign-in
+  components/ Forms, modal, shared UI
 ```
 
-There is no repository layer, deliberately. SQLAlchemy's `Session` already implements Unit of Work and Identity Map, and the schema is intentionally Postgres-shaped, so there is no second backend to abstract over. `services/` exists for a narrower reason: `record_sale` owns an invariant that must live in exactly one place once both a REST endpoint and an importer call it.
+No repository layer. SQLAlchemy's `Session` is already a unit of work, and the schema is deliberately Postgres-shaped, so there's no second backend to abstract over. `services/` exists for a narrower reason: `record_sale` owns an invariant that has to live in one place.
 
 ## Status
 
-Working: authentication, item CRUD with filtering and pagination, sales with profit calculation, full-text search with fuzzy matching on either Postgres or Elasticsearch, a dashboard computed entirely in SQL (profit over time, profit by marketplace, inventory aging), streaming CSV export, light and dark themes, and a responsive layout.
+Working: auth, item CRUD, sales and profit, SQL dashboard, search on either backend, CSV export, dark mode, mobile.
 
-Not built yet: market price tracking. The `products` table and `price_snapshots` exist and are indexed for it, but nothing creates products yet, so a poller would have nothing to price. That needs a products API and a way to link a lot to a catalog entry before the scheduled job is worth writing.
+Not built: market price tracking. `products` and `price_snapshots` are modelled and indexed, but nothing creates products yet, so a price poller would have nothing to attach to.
 
-Deliberately out of scope: email verification, password reset, and refresh tokens. Rate limiting and a constant-time login path were added when the app became internet-facing; see Deploying.
+Out of scope: email verification, password reset, refresh tokens.
