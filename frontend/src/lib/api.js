@@ -67,6 +67,13 @@ export const api = {
 
   listMarketplaces: () => request("/marketplaces"),
 
+  dashboardSummary: (range) => request("/dashboard/summary", { params: { range } }),
+  profitOverTime: (range, bucket) =>
+    request("/dashboard/profit-over-time", { params: { range, bucket } }),
+  profitByMarketplace: () => request("/dashboard/by-marketplace"),
+  inventoryAging: () => request("/dashboard/inventory-aging"),
+  topItems: (limit) => request("/dashboard/top-items", { params: { limit } }),
+
   listSales: (params) => request("/sales", { params }),
   createSale: (body) => request("/sales", { method: "POST", body }),
   voidSale: (id) => request(`/sales/${id}`, { method: "DELETE" }),

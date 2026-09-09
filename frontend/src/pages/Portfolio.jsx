@@ -14,14 +14,15 @@ import { Amount, Profit, Segmented } from "../components/ui";
 import { useTheme } from "../lib/theme";
 
 const RANGES = [
-  { value: "1m", label: "1m", days: 30 },
-  { value: "3m", label: "3m", days: 90 },
-  { value: "ytd", label: "Ytd", days: null },
-  { value: "all", label: "All", days: Infinity },
+  { value: "1m", label: "1m" },
+  { value: "3m", label: "3m" },
+  { value: "1y", label: "1y" },
+  { value: "ytd", label: "Ytd" },
+  { value: "all", label: "All" },
 ];
 
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
-const day = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+const monthLabel = new Intl.DateTimeFormat("en-US", { month: "short", year: "2-digit" });
 
 /** Recharts needs real colour values, so the theme tokens are read from CSS. */
 function useChartColors() {
@@ -29,78 +30,78 @@ function useChartColors() {
   return useMemo(() => {
     const s = getComputedStyle(document.documentElement);
     const get = (n) => s.getPropertyValue(n).trim();
-    return { gain: get("--gain"), loss: get("--loss"), line: get("--line"), muted: get("--muted") };
-    // theme is the dependency: the variables resolve differently after it changes.
+    return {
+      gain: get("--gain"),
+      loss: get("--loss"),
+      line: get("--line"),
+      muted: get("--muted"),
+    };
   }, [theme]);
 }
 
-function startOf(range) {
-  if (range === "all") return new Date(0);
-  if (range === "ytd") return new Date(new Date().getFullYear(), 0, 1);
-  const days = RANGES.find((r) => r.value === range).days;
-  return new Date(Date.now() - days * 86400000);
-}
-
 export default function Portfolio() {
-  const [sales, setSales] = useState(null);
-  const [items, setItems] = useState(null);
+  const [summary, setSummary] = useState(null);
+  const [series, setSeries] = useState(null);
+  const [byMarketplace, setByMarketplace] = useState([]);
   const [range, setRange] = useState("all");
+  const [error, setError] = useState(null);
   const colors = useChartColors();
 
   useEffect(() => {
-    Promise.all([api.listSales({ limit: 100 }), api.listItems({ limit: 100 })])
-      .then(([s, i]) => {
-        setSales(s.sales);
-        setItems(i.items);
+    let cancelled = false;
+    setError(null);
+    // Every figure below is computed in Postgres. The browser receives a dozen
+    // numbers rather than every sale that produced them.
+    Promise.all([
+      api.dashboardSummary(range),
+      api.profitOverTime(range, "month"),
+      api.profitByMarketplace(),
+    ])
+      .then(([s, t, m]) => {
+        if (cancelled) return;
+        setSummary(s);
+        setSeries(t);
+        setByMarketplace(m);
       })
-      .catch(() => {
-        setSales([]);
-        setItems([]);
-      });
-  }, []);
+      .catch(() => !cancelled && setError("Could not load the dashboard."));
+    return () => {
+      cancelled = true;
+    };
+  }, [range]);
 
-  const view = useMemo(() => {
-    if (!sales || !items) return null;
-
-    const from = startOf(range);
-    const inRange = sales.filter((s) => new Date(s.sold_at) >= from);
-    const before = sales.filter((s) => new Date(s.sold_at) < from);
-
-    const sum = (rows) => rows.reduce((n, s) => n + Number(s.net_profit), 0);
-    const periodProfit = sum(inRange);
-    const priorProfit = sum(before);
-    const totalProfit = periodProfit + priorProfit;
-
-    const tiedUp = items.reduce(
-      (n, i) => n + Number(i.unit_cost) * i.quantity_remaining,
-      0,
-    );
-    const units = items.reduce((n, i) => n + i.quantity_remaining, 0);
-
-    // Cumulative realized profit, oldest first. Every point is a real sale —
-    // nothing here is interpolated or invented.
-    const chronological = [...sales].sort(
-      (a, b) => new Date(a.sold_at) - new Date(b.sold_at),
-    );
+  // The API returns per-period profit; the chart shows the running total, which
+  // is a one-line scan rather than something worth a second endpoint.
+  const cumulative = useMemo(() => {
+    if (!series) return [];
     let running = 0;
-    const series = chronological.map((s) => {
-      running += Number(s.net_profit);
-      return { t: new Date(s.sold_at).getTime(), value: Number(running.toFixed(2)) };
+    return series.map((p) => {
+      running += Number(p.net_profit);
+      return {
+        t: new Date(p.period).getTime(),
+        value: Number(running.toFixed(2)),
+        period: Number(p.net_profit),
+      };
     });
+  }, [series]);
 
-    // Percentage change is undefined against a zero base, so it is shown only
-    // when there is a prior figure to compare against.
-    const pct = priorProfit !== 0 ? (periodProfit / Math.abs(priorProfit)) * 100 : null;
+  if (error) {
+    return (
+      <div>
+        <div className="border-b border-line px-6 py-3.5">
+          <h1 className="expanded text-lg font-semibold">Portfolio</h1>
+        </div>
+        <p role="alert" className="px-6 py-10 text-loss">
+          {error}
+        </p>
+      </div>
+    );
+  }
 
-    // With nothing before the window, the "change" is the total restated.
-    const hasComparison = before.length > 0;
+  if (!summary) return <div className="px-6 py-10 text-muted">Loading…</div>;
 
-    return { totalProfit, periodProfit, pct, tiedUp, units, series, hasComparison, count: sales.length };
-  }, [sales, items, range]);
-
-  if (!view) return <div className="px-6 py-10 text-muted">Loading…</div>;
-
-  const up = view.periodProfit >= 0;
+  const windowed = range !== "all" && summary.period_sale_count > 0;
+  const up = Number(summary.period_net_profit) >= 0;
+  const chartColor = Number(summary.net_profit) >= 0 ? colors.gain : colors.loss;
 
   return (
     <div>
@@ -112,8 +113,8 @@ export default function Portfolio() {
         <p className="text-sm text-muted">Realized profit</p>
 
         <div className="mt-1.5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-          <Profit value={view.totalProfit} size="figure" />
-          {view.hasComparison && (
+          <Profit value={summary.net_profit} size="figure" />
+          {windowed && (
             <span
               className={`inline-flex items-center gap-1 text-sm font-medium ${up ? "text-gain" : "text-loss"}`}
             >
@@ -124,22 +125,19 @@ export default function Portfolio() {
               )}
               <span className="tabular">
                 {up ? "+" : "−"}
-                {money.format(Math.abs(view.periodProfit))}
+                {money.format(Math.abs(Number(summary.period_net_profit)))}
               </span>
-              {view.pct !== null && (
-                <span className="tabular text-muted">
-                  {view.pct >= 0 ? "+" : "−"}
-                  {Math.abs(view.pct).toFixed(1)}%
-                </span>
-              )}
+              <span className="text-muted">
+                this {RANGES.find((r) => r.value === range)?.label.toLowerCase()}
+              </span>
             </span>
           )}
         </div>
 
         <p className="mt-2 text-sm text-muted">
-          <span className="tabular text-ink">{view.units}</span> units in stock,{" "}
-          <Amount value={view.tiedUp} className="text-ink" /> tied up across{" "}
-          <span className="tabular text-ink">{items.length}</span> lots
+          <span className="tabular text-ink">{summary.units_in_stock}</span> units in
+          stock, <Amount value={summary.capital_tied_up} className="text-ink" /> tied up
+          across <span className="tabular text-ink">{summary.lot_count}</span> lots
         </p>
 
         <div className="mt-5">
@@ -147,24 +145,29 @@ export default function Portfolio() {
             label="Time range"
             value={range}
             onChange={setRange}
-            options={RANGES.map(({ value, label }) => ({ value, label }))}
+            options={RANGES}
           />
         </div>
 
         <div className="mt-6 h-64">
-          {view.series.length < 2 ? (
+          {cumulative.length < 2 ? (
             <div className="grid h-full place-items-center rounded-xl bg-surface text-center text-sm text-muted">
               <p className="max-w-xs">
-                Log at least two sales and the profit curve appears here.
+                {cumulative.length === 0
+                  ? "No sales in this period. Log one and the profit curve appears here."
+                  : "One month of sales so far. The curve appears once there are two."}
               </p>
             </div>
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={view.series} margin={{ top: 4, right: 4, bottom: 0, left: 0 }}>
+              <AreaChart
+                data={cumulative}
+                margin={{ top: 4, right: 4, bottom: 0, left: 0 }}
+              >
                 <defs>
                   <linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={colors.gain} stopOpacity={0.22} />
-                    <stop offset="100%" stopColor={colors.gain} stopOpacity={0} />
+                    <stop offset="0%" stopColor={chartColor} stopOpacity={0.22} />
+                    <stop offset="100%" stopColor={chartColor} stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid stroke={colors.line} vertical={false} />
@@ -172,7 +175,7 @@ export default function Portfolio() {
                   dataKey="t"
                   type="number"
                   domain={["dataMin", "dataMax"]}
-                  tickFormatter={(t) => day.format(new Date(t))}
+                  tickFormatter={(t) => monthLabel.format(new Date(t))}
                   stroke={colors.muted}
                   tickLine={false}
                   axisLine={false}
@@ -187,20 +190,24 @@ export default function Portfolio() {
                   fontSize={12}
                 />
                 <Tooltip
-                  formatter={(v) => [money.format(v), "Cumulative profit"]}
-                  labelFormatter={(t) => day.format(new Date(t))}
+                  formatter={(v, _n, p) => [
+                    `${money.format(v)} (${p.payload.period >= 0 ? "+" : "−"}${money.format(Math.abs(p.payload.period))} that month)`,
+                    "Running total",
+                  ]}
+                  labelFormatter={(t) => monthLabel.format(new Date(t))}
                   contentStyle={{
                     background: "var(--raised)",
-                    border: `1px solid var(--line)`,
+                    border: "1px solid var(--line)",
                     borderRadius: 8,
                     color: "var(--ink)",
                     fontSize: 13,
                   }}
                 />
+                {/* Profit changes when a sale is recorded, not continuously. */}
                 <Area
                   type="stepAfter"
                   dataKey="value"
-                  stroke={colors.gain}
+                  stroke={chartColor}
                   strokeWidth={2}
                   fill="url(#fill)"
                 />
@@ -208,6 +215,50 @@ export default function Portfolio() {
             </ResponsiveContainer>
           )}
         </div>
+
+        {byMarketplace.length > 0 && (
+          <div className="mt-10">
+            <h2 className="expanded font-semibold">Where it sold</h2>
+            <table className="mt-3 w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-line text-muted">
+                  <th scope="col" className="py-2 pr-3 font-medium">
+                    Marketplace
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    Sales
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    Revenue
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    Fees
+                  </th>
+                  <th scope="col" className="py-2 pl-3 text-right font-medium">
+                    Net profit
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {byMarketplace.map((m) => (
+                  <tr key={m.slug} className="border-b border-line/70">
+                    <td className="py-2.5 pr-3 font-medium">{m.marketplace}</td>
+                    <td className="px-3 py-2.5 text-right tabular">{m.sale_count}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <Amount value={m.revenue} />
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-muted">
+                      <Amount value={m.platform_fees} />
+                    </td>
+                    <td className="py-2.5 pl-3 text-right">
+                      <Profit value={m.net_profit} size="sm" />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

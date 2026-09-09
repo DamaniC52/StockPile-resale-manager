@@ -21,6 +21,24 @@ class SaleCreate(BaseModel):
     external_order_id: str | None = Field(default=None, max_length=64)
 
 
+class ItemRef(BaseModel):
+    """Just enough of the lot to label a sale."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    size: str | None
+
+
+class MarketplaceRef(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    slug: str
+
+
 class SaleRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -44,6 +62,11 @@ class SaleRead(BaseModel):
     revenue: Decimal
     cogs: Decimal
     net_profit: Decimal
+
+    # Populated from the relationships. list_sales eager-loads both; without
+    # that, serializing a page of 20 sales would fire 40 extra queries.
+    item: ItemRef
+    marketplace: MarketplaceRef
 
 
 class SaleListResponse(BaseModel):

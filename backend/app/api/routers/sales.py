@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import CurrentUser, DbSession
 from app.models.sale import Sale
@@ -56,6 +57,9 @@ def list_sales(
     rows = db.scalars(
         select(Sale)
         .where(*filters)
+        # Two extra queries total (one per relationship, using IN), instead of
+        # one per row. This is the N+1 fix.
+        .options(selectinload(Sale.item), selectinload(Sale.marketplace))
         # Unique tiebreak so pagination is stable when sold_at repeats.
         .order_by(Sale.sold_at.desc(), Sale.id.desc())
         .limit(limit)

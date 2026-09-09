@@ -6,6 +6,7 @@ import Sidebar from "./components/Sidebar";
 import SignIn from "./pages/SignIn";
 import Inventory from "./pages/Inventory";
 import Portfolio from "./pages/Portfolio";
+import Sales from "./pages/Sales";
 
 function Shell({ children }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -55,7 +56,7 @@ function Routing() {
         path="/sales"
         element={
           <Protected>
-            <div className="px-6 py-10 text-muted">Sales list is next.</div>
+            <Sales />
           </Protected>
         }
       />

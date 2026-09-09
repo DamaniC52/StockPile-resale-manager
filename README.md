@@ -108,6 +108,36 @@ A sale claiming user 4 while referencing an item owned by user 7 is rejected by 
 
 `revenue`, `cogs` and `net_profit` are SQLAlchemy hybrid properties with both a Python body and a SQL expression. `sale.net_profit` runs in Python; `func.sum(Sale.net_profit)` compiles to SQL and aggregates in the database instead of loading every row into memory.
 
+### The dashboard aggregates in Postgres, and the index earns its place
+
+Profit over time is one grouped query rather than a fetch-and-sum in the browser:
+
+```sql
+SELECT date_trunc('month', sold_at) AS period, SUM(...) AS net_profit
+FROM sales WHERE user_id = :user AND sold_at >= :since
+GROUP BY period ORDER BY period
+```
+
+Benchmarked on 300,000 sales across four tenants, 60,000 of them the caller's,
+with `EXPLAIN (ANALYZE, BUFFERS)`:
+
+| | With `ix_sales_user_id_sold_at` | Index scans disabled |
+|---|---|---|
+| Access path | Bitmap Index Scan | Parallel Seq Scan |
+| **Shared buffers** | **430** | 4,017 |
+| CPU workers | 1 | 3 |
+| Rows read then discarded | 0 | ~274,000 |
+| Execution time | 37 ms | 45 ms |
+
+The wall-clock difference is small, and that is the interesting part: Postgres
+kept the sequential scan competitive by launching two extra parallel workers.
+The index does the same work with **9x less I/O on a single core** where the
+scan needs three, and reads none of the other tenants' rows. On an idle laptop
+that looks like 8 ms; under concurrent load those cores are not free.
+
+Buffers, not elapsed time, are the honest measure of a query on a machine with
+spare CPU.
+
 ### Flat purchase fees are allocated so the parts sum exactly
 
 A $20 inbound shipping charge across a lot of three is $6.6667 per unit — rounded, three shares total $20.01. The final sale of a lot absorbs the remainder instead, making the total exact by construction. Verified in `tests/test_sales.py`, including under concurrency.
@@ -122,6 +152,7 @@ backend/
     models/       SQLAlchemy models, constraints and indexes
     schemas/      Pydantic request/response contracts
     services/     Multi-step writes that own an invariant
+    queries/      Read-side aggregations; returns rows, not entities
     api/          Routers and shared dependencies
     db/           Engine, session, declarative base, seed data
   alembic/        Migrations
@@ -138,8 +169,8 @@ There is no repository layer, deliberately. SQLAlchemy's `Session` already imple
 
 ## Status
 
-Working: authentication, item CRUD with filtering and pagination, sales with profit calculation, portfolio view with a profit chart, light and dark themes.
+Working: authentication, item CRUD with filtering and pagination, sales with profit calculation, a dashboard computed entirely in SQL (profit over time, profit by marketplace, inventory aging), light and dark themes.
 
-Not built yet: Postgres full-text search (item search currently uses `ILIKE`, which cannot use an index), an Elasticsearch backend behind the same `SearchService` interface, server-side dashboard aggregations, and a scheduled market-price poller.
+Not built yet: Postgres full-text search (item search currently uses `ILIKE`, which cannot use an index), an Elasticsearch backend behind the same `SearchService` interface, and a scheduled market-price poller.
 
 Deliberately out of scope, since this is not deployed publicly: email verification, password reset, refresh tokens, and rate limiting on the login endpoint. All four would be required before exposing it to real users.
