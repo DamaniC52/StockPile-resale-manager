@@ -29,10 +29,6 @@ def profit_summary(
     since: datetime | None = None,
 ) -> dict:
     """Headline figures: realized profit, revenue, fees, units sold.
-
-    One row out of the database regardless of how many sales exist. The SUMs
-    compile from the hybrid properties on Sale, so the formula is defined once
-    and evaluated here in SQL.
     """
     stmt = _scoped(
         select(
