@@ -6,7 +6,7 @@ Most resellers track this in a spreadsheet, which handles *what you own* but fal
 
 **Stack:** FastAPI · PostgreSQL · SQLAlchemy · Alembic · Elasticsearch · React · Vite · Tailwind
 
-**Live demo:** https://stockpile-three.vercel.app — sign in as `demo@stockpile.app` / `demo-password-123`. The API sleeps when idle, so the first load can take 30 seconds.
+**Live demo:** https://stockpile-three.vercel.app — sign in as `demo@stockpile.app` / `demo-password-123`. 
 
 ![Portfolio view showing realized profit charted over three months](docs/screenshots/portfolio.png)
 
