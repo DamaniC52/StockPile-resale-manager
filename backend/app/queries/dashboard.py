@@ -1,8 +1,4 @@
 """Dashboard aggregations.
-
-Every function returns rows, not ORM objects: these are reports, not entities.
-All arithmetic happens in Postgres so the API returns a handful of numbers
-rather than the sales that produced them.
 """
 
 from datetime import date, datetime
