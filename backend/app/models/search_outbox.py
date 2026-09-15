@@ -1,15 +1,4 @@
 """Transactional outbox for search index updates.
-
-Postgres is the source of truth; the search index is derived from it. Writing
-to both in one request is the obvious approach and the wrong one: if the
-database commit succeeds and the index write fails — or the process dies
-between them — the two diverge with nothing to reconcile them.
-
-Instead, the item change and a row here are written in the SAME transaction.
-Either both exist or neither does. A separate drainer reads pending rows and
-applies them to the index, retrying on failure. The index is therefore
-eventually consistent with the database, with at-least-once delivery, and a
-failed index write can never lose an update.
 """
 
 from datetime import datetime
